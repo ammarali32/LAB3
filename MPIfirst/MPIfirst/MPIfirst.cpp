@@ -65,6 +65,11 @@ int* Init(int& nPar) {
 		for (int i = 0; i < n; i++) {
 			std::cin >> Input[i];
 		}
+		int oldn = n;
+		while (n % size != 0)n++;
+		for (int i = oldn; i < n; i++) {
+			Input[i] = (1 << 31);
+		}
 		nPar = n / size;
 		int* partData = (int*)malloc(nPar * sizeof(int));
 		for (int i = 0; i < nPar; i++) {
