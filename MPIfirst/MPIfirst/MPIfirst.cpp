@@ -1,129 +1,216 @@
-#include<iostream>
-#include<math.h>
-#include<chrono>
-#include<fstream>
-#include"mpi.h"
-#include<stdio.h>
-#include<stdlib.h>
-#include<algorithm>
-#define MAX 1000005
-using namespace std;
-int LOM_PARTITION(int* A, int l, int r) {
-	int pi = A[r];
-	int j = l - 1;
-	for (int i = l; i < r; i++) {
-		if (A[i] <= pi) {
-			j++;
-			std::swap(A[i], A[j]);
-		}
+#include<mpi.h>
+#include <iostream>
+#include <math.h>
+#include <chrono>
+#include <fstream>
+#include <string>
+
+const int MAX_SIZE = 500000;
+int size, myRank;
+
+int PARTITION(int* A, int l, int r) {
+	int pi = A[l];
+	int i = l - 1, j = r + 1;
+	while (1) {
+		do {
+			i++;
+		}while (A[i] < pi);
+		do {
+			j--;
+		}while (A[j] > pi);
+		if (i >= j)return j;
+		int temp = A[i];
+		A[i] = A[j];
+		A[j] = temp;
 	}
-	std::swap(A[j + 1], A[r]);
-	return j + 1;
 }
 
-void NORM_QUICK_SORT(int* A, int l, int r) {
-	
+int Average(int* A, int l, int r) {
+	long long sum = 0;
+	for (int i = l; i <= r; i++) {
+		sum += A[i];
+	}
+	return (int)(sum / (r - l + 1));
+}
+int LOM_PARTITION(int* A, int l, int r, int pi) {
+	int i = l - 1;
+	for (int j = l; j < r; j++) {
+		if (A[j] <= pi) {
+			i++;
+			int temp = A[i];
+			A[i] = A[j];
+			A[j] = temp;
+		}
+	}
+	int temp = A[i + 1];
+	A[i + 1] = A[r];
+	A[r] = temp;
+	return (A[i + 1] > pi) ? i : (i + 1);
+}
+
+void quicksort(int* A, int l, int r) {
 	if (l < r) {
-		int par = LOM_PARTITION(A, l, r);
-		NORM_QUICK_SORT(A, l, par-1);
-		NORM_QUICK_SORT(A, par + 1, r);
+		int pi = PARTITION(A, l, r);
+		quicksort(A, l, pi);
+		quicksort(A, pi + 1, r);
 	}
 }
-int SORT_REC(int* A, int Asize, int process, int maxprocesses, int depth) {
-	MPI_Status status;
-	int sharing = process + (1 << depth);
-	depth++;
-	//std::cout << sharing <<" "<<process<<" "<<depth<<" "<<maxprocesses<< std::endl;
-	if (sharing > maxprocesses) {
-		NORM_QUICK_SORT(A, 0, Asize-1 );
-		return 0;
-	}
-	int id = 0, piv_id;
-	do {
-		piv_id = LOM_PARTITION(A, id, Asize - 1);
-		id++;
-	} while (piv_id == id - 1 && id <= Asize -1);
-	if (id > Asize - 1) {
-		return 0;
-	}
-	if (piv_id <= Asize - piv_id) {
-		MPI_Send(A, piv_id - 1, MPI_INT, sharing, piv_id, MPI_COMM_WORLD);
-		SORT_REC((A + piv_id + 1), (Asize - piv_id - 1), process, maxprocesses, depth);
-		MPI_Recv(A, piv_id - 1, MPI_INT, sharing, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+
+int* Init(int& nPar) {
+	if (myRank == 0) {
+		int* Input = (int*)malloc(MAX_SIZE * sizeof(int));
+		freopen("input.txt", "r", stdin);
+		int n;
+		std::cin >> n;
+		for (int i = 0; i < n; i++) {
+			std::cin >> Input[i];
+		}
+		nPar = n / size;
+		int* partData = (int*)malloc(nPar * sizeof(int));
+		for (int i = 0; i < nPar; i++) {
+			partData[i] = Input[i];
+		}
+		for (int rank = 1; rank < size; rank++) {
+			MPI_Send(&nPar, 1, MPI_INT, rank, 0, MPI_COMM_WORLD);
+			MPI_Send((Input + rank * nPar), nPar, MPI_INT, rank, 1, MPI_COMM_WORLD);
+		}
+		free(Input);
+		return partData;
 	}
 	else {
-		MPI_Send((A + piv_id + 1), Asize - piv_id - 1, MPI_INT, sharing, piv_id + 1, MPI_COMM_WORLD);
-		SORT_REC(A, piv_id + 1, process, maxprocesses, depth);
-		MPI_Recv((A + piv_id + 1), Asize - piv_id - 1, MPI_INT, sharing, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+		MPI_Recv(&nPar, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		int* partData = (int*)malloc(nPar * sizeof(int));
+		MPI_Recv(partData, nPar, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		return partData;
 	}
 }
-int A[MAX],B[MAX];
 
-int main(int argc,char *argv[]){
-	ifstream inf("test.csv");
-
-	char c;
-	string ss; ss.clear();
-	while (inf.get(c))
-	{
-		ss.push_back(c);
+void FindPivot(int* piPartData, int nPar, int dimension, int mask, int it, int* piarray) {
+	MPI_Group WorldGroup;
+	MPI_Group cubeGroup;
+	MPI_Comm cubeComm;
+	int groupNum = size / (int)pow(2, dimension - it);
+	int* pRanks = (int*)malloc(groupNum * sizeof(int));
+	int StartProc = myRank - groupNum;
+	StartProc = ((StartProc < 0) ? 0 : StartProc);
+	int EndProc = myRank + groupNum;
+	EndProc = ((EndProc > size) ? size : EndProc);
+	int j = 0;
+	
+	for (int p = StartProc; p < EndProc; p++) {
+		//std::cout << myRank << " " << mask << " " << p << " " << it << std::endl;
+		if ((myRank & mask) >> (it) == (p & mask) >> (it)) {
+			pRanks[j++] = p;
+			//std::cout << pRanks[j - 1] << std::endl;
+		}
+		//pRanks[j++] = p;
 	}
-	inf.close();
-	ofstream of("test.csv");
-	of << ss << endl; 
-	int size, rank;
-	MPI_Init(&argc, &argv);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &size);
-	int depth = 0;
-	while ((1 << depth) <= rank)depth++;
-	int n = 10;
-	of << " using " << size << " of threads\n";
-	while (n <= 1000000) {
-		if (rank == 0) {
-			
-			/*freopen("input.txt", "r", stdin);
+	
+	MPI_Comm_group(MPI_COMM_WORLD, &WorldGroup);
+	MPI_Group_incl(WorldGroup, groupNum, pRanks, &cubeGroup);
+	MPI_Comm_create(MPI_COMM_WORLD, cubeGroup, &cubeComm);
+	if (myRank == pRanks[0]) {
+		*piarray = Average(piPartData, 0, nPar - 1);
+	}
+	
+	MPI_Bcast(piarray, 1, MPI_INT, 0, cubeComm);
+	MPI_Group_free(&cubeGroup);
+	MPI_Comm_free(&cubeComm);
+	free(pRanks);
+}
+void MERGE(int* mergedData, int mergDataSize, int* partData, int DataSize, int * partRecData, int RecDataSize) {
+	for (int i = 0; i < mergDataSize; i++) {
+		mergedData[i] =( (i < DataSize) ? partData[i] : partRecData[i - DataSize]);
+	}
+}
 
-			int n; std::cin >> n;
-			for (int i = 0; i < n; i++)std::cin >> A[i];*/
-			//int n = 100000;
-			//for (int i = 0; i < n; i++)A[i] = rand() % 100 +1;
-
-			for (int i = 0; i < n; i++) {
-				A[i] = rand() % 10000 + 1;
-			}
-			cout << n << " stopped here " << rank << " " << size << endl;
-			auto start = std::chrono::steady_clock::now();
-			SORT_REC(A, n, rank, size - 1, depth);
-			auto finish = std::chrono::steady_clock::now();
-			of << (std::chrono::duration<double, std::milli>(finish - start).count()) << " ms " << std::endl;
-			n *= 10;
-
-			//freopen("output.txt", "w", stdout);
-			//std::cout << n << std::endl;
-			//for (int i = 0; i < n; i++)std::cout << A[i]<<" ";
-			//fclose(stdout);			
+void PARALLELQUICKSORT(int *& partData,int * nPar){
+	MPI_Status status;
+	int CommRank;
+	int* PtData, * partSendData;
+	int DataSize, SendingDataSize, RecDataSize, MergDataSize;
+	int CubeDim = (int)(log(size) / log(2));
+	int mask = size;
+	int pi;
+	for (int i = CubeDim; i > 0; i--) {
+		FindPivot(partData, *nPar, CubeDim, mask, i, &pi);
+		mask = mask >> 1;
+		int id = LOM_PARTITION(partData, 0, *nPar - 1, pi);
+		if ((myRank & mask) == 0) {
+			CommRank = myRank + mask;
+			partSendData = &partData[id + 1];
+			SendingDataSize = *nPar - id - 1;
+			if (SendingDataSize < 0)SendingDataSize = 0;
+			PtData = &partData[0];
+			DataSize = id + 1;
 		}
 		else {
-			MPI_Status status;
-			int arsize;
-			MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-			MPI_Get_count(&status, MPI_INT, &arsize);
-			int source = status.MPI_SOURCE;
-			int* ar = new int[arsize];
-			MPI_Recv(ar, arsize, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUSES_IGNORE);
-			SORT_REC(ar, arsize, rank, size - 1, depth);
-			MPI_Send(ar, arsize, MPI_INT, source, 0, MPI_COMM_WORLD);
+			CommRank = myRank - mask;
+			partSendData = &partData[0];
+			SendingDataSize = id + 1;
+			if (SendingDataSize > *nPar)SendingDataSize = id;
+			PtData = &partData[id + 1];
+			DataSize = *nPar - id - 1;
+			if (DataSize < 0) DataSize = 0;
+		}
+		MPI_Sendrecv(&SendingDataSize, 1, MPI_INT, CommRank, 0, &RecDataSize, 1, MPI_INT, CommRank, 0, MPI_COMM_WORLD, &status);
+		int* pRecvData = (int*)malloc(RecDataSize * sizeof(int));
+		MPI_Sendrecv(partSendData, SendingDataSize, MPI_INT, CommRank, 0, pRecvData, RecDataSize, MPI_INT, CommRank, 0, MPI_COMM_WORLD, &status);
+		MergDataSize = DataSize + RecDataSize;
+		int* pMergeData = (int*)malloc(MergDataSize * sizeof(int));
+		MERGE(pMergeData, MergDataSize, PtData, DataSize, pRecvData, RecDataSize);
+		partData = pMergeData;
+		*nPar = MergDataSize;
+		free(pRecvData);
+	}
+}
+void ProcessTermination(int* ProcData, int nPar) {
+
+	MPI_Status status;
+	long long DataSize = 0;
+	MPI_Reduce(&nPar, &DataSize, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+	int* Data, * rcounts, * displs;
+	rcounts = (int*)malloc(size * sizeof(int));
+	Data = (int*)malloc(DataSize * sizeof(int));
+	displs = (int*)malloc(size * sizeof(int));
+	MPI_Gather(&nPar, 1, MPI_INT, rcounts, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	if (myRank == 0) {
+		int acc = 0;
+		for (int r = 0; r < size; r++) {
+			displs[r] = acc;
+			acc += rcounts[r];
+		}
+	}
+	MPI_Gatherv(ProcData, nPar, MPI_INT, Data, rcounts, displs, MPI_INT, 0, MPI_COMM_WORLD);
+	if (myRank == 0)
+	{
+		freopen("output.txt", "w", stdout);
+		std::cout << DataSize << std::endl;
+		for (int i = 0; i < DataSize; i++) {
+			std::cout << Data[i] << " ";
 		}
 		
-		
 	}
-	of.close();
-	MPI_Finalize();
-	return 0;
-
-	
+	free(ProcData);
 	
 }
 
+
+int main(int argc, char* argv[]) {
+
+	MPI_Init(&argc, &argv);
+	MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+	int ProcDataSize;
+	int* ProcData = Init( ProcDataSize);
+	auto start = std::chrono::high_resolution_clock::now();
+	PARALLELQUICKSORT(ProcData, &ProcDataSize);
+	quicksort(ProcData, 0, ProcDataSize - 1);
+	auto finish = std::chrono::high_resolution_clock::now();
+	
+	ProcessTermination( ProcData, ProcDataSize);
+	std::cout << (std::chrono::duration<double, std::milli>(finish - start).count()) << std::endl;
+	MPI_Finalize();
+	return 0;
+}
 
